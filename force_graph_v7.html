@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<style>
+    body {
+        overflow:hidden;
+        margin:0;
+    }
+
+    text {
+        font-family: sans-serif;
+        pointer-events: none;
+    }
+
+    .node {
+        fill: #40a2e5;
+        stroke-width: none;
+    }
+    .node.reachable {
+        fill: #4fc2e5;
+    }
+    .node.fixed {
+        fill: orange;
+    }
+    .node.focused {
+        stroke: red;
+        stroke-width: 1.5;
+    }
+
+    .nodelabel {
+        fill: black;
+        font-size: 7px;
+        font-weight: normal;
+        text-anchor: middle;
+    }
+    .nodelabel.focused {
+        font-weight: bold;
+    }
+
+
+    .edge {
+        stroke: #c6c6c6;
+        stroke-width: 1.5;
+    }
+    .edge.fixed {
+        stroke: orange;
+    }
+    .edge.focused {
+        stroke: red;
+    }
+
+    .edgelabel {
+        fill: #c6c6c6;
+        font-size: 6px;
+        font-weight: normal;
+        text-anchor: middle;
+    }
+    .edgelabel.fixed {
+        fill: orange;
+    }
+    .edgelabel.focused {
+        fill: red;
+        font-weight: bold;
+    }
+
+    .unfocused {
+        opacity: 0.5
+    }
+
+    text.unfocused {
+        opacity: 0;
+    }
+
+
+    .arrowhead {
+        stroke: none;
+    }
+
+    #arrowheadneutral {
+        fill: #c6c6c6;
+    }
+    #arrowheadfocused {
+        fill: red;
+    }
+    #arrowheadunfocused {
+        fill: #ceedf9;
+    }
+    #arrowheadfixed {
+        fill: orange;
+    }
+
+
+</style>
+<body>
+    <div class="focused">
+        <h4>Project Saturn v0.7</h4>
+    </div>
+<script src="http://d3js.org/d3.v4.min.js"></script>
+<script src="http://d3js.org/d3-selection-multi.v1.js"></script>
+<script>
+	/* V7: use edge id to identify edges. to support dynamic add/delete of nodes */
+
+    /* EMBEDS the graph.JSON file into the script because of work laptop firewall issues */
+    /* Making the EDGE LABELS work */
+
+    const MY_DATA = {
+        "nodes": [
+            {"id": "Jon"},
+            {"id": "Greta"},
+            {"id": "Scrappy"},
+            {"id": "Patty"},
+            {"id": "Panda"},
+            {"id": "Pet"},
+            {"id": "The GodFanda"},
+            {"id": "Rich"},
+            {"id": "Lucky"}
+        ],
+        "edges": [
+            {"source": 0, "target": 1, "label": "loves"},
+            {"source": 0, "target": 2, "label": "pets"},
+            {"source": 1, "target": 3, "label": "Is Noona of"},
+            {"source": 0, "target": 3, "label": "Kicks"},
+            {"source": 3, "target": 2, "label": "Is Besties With"},
+            {"source": 3, "target": 4, "label": "Is-a"},
+            {"source": 3, "target": 5, "label": "Is-a"},
+            {"source": 3, "target": 6, "label": "Is-the"},
+            {"source": 3, "target": 7, "label": "Is-really"},
+            {"source": 3, "target": 8, "label": "Is-quite"},
+            {"source": 3, "target": 7, "label": "R-E-A-L-L-Y"}
+        ]
+    };
+
+
+    const INSTREAM_DATA = MY_DATA;
+
+    const LOAD_FROM_FILE = false;
+    const INPUT_PATH = "graph2.json";
+
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+
+    //create SVG area
+    const svg = d3.select("body").append("svg");
+    svg.attr("width", w)
+        .attr("height", h);
+    //svg.style("cursor","move");
+    const chartArea = svg.append("g");
+
+    /* BOOTSTRAP AND RUN!!! */
+    if (LOAD_FROM_FILE) {
+        d3.json(INPUT_PATH, (e, data) => {
+            JGraph(data).start();
+        });
+    } else {
+        const g = new JGraph(INSTREAM_DATA);
+        g.start();
+    }
+
+
+    //MAIN
+    /*
+    TODO
+    - make FP reject()
+    - separate FP tools into fpj package
+    - Make global state variable
+    - make sample button for toggling ie prefix=p
+    - add checkboxes on jumbotron for toggling
+    - control from outside
+     */
+    function JGraph(data){
+        //switches
+        const EDGELABEL_KEEP_UPRIGHT = false;
+        const SHOW_EDGES = true;
+        const SHOW_EDGE_ARROWHEADS = true;
+        const NODEDRAG_FIXES_POSITION = false;
+        const NODE_COLLISION_PADDING = 1;
+
+        //sim settings
+        const LINK_DISTANCE = 100;
+        const GRAPH_CHARGE = -100;
+        const NODE_RADIUS = 20;
+        const NODE_POP_SIZE = 5;
+        const EDGE_ARROWHEAD_OFFSET = 30; //distance from tip of an edge. adjust based on node radius
+
+        const timings = {
+            nodePop: 400,
+            nodeExit: 200,
+            nodeEnter: 800
+        };
+
+        //special classnames
+        const classnames = {
+            node: "node",
+            nodeLabel: "nodelabel",
+            edge: "edge",
+            edgeLabel: "edgelabel",
+            focused: "focused",
+            unfocused: "unfocused",
+            fixed: "fixed",
+            reachable: "reachable",
+            arrowhead: "arrowhead"
+        };
+        
+        const ids = {
+            arrowheadNeutral: "arrowheadneutral",
+            arrowheadFocused: "arrowheadfocused",
+            arrowheadUnfocused: "arrowheadunfocused",
+            arrowheadFixed: "arrowheadfixed"
+        };
+
+        //Setup simulation Forces
+        const simulation = d3.forceSimulation()
+            .force("link", d3.forceLink().distance(LINK_DISTANCE))
+            .force("collide", d3.forceCollide().radius(() => NODE_RADIUS + NODE_COLLISION_PADDING).iterations(2))
+            .force("charge", d3.forceManyBody().strength(GRAPH_CHARGE))
+            .force("center", d3.forceCenter(w / 2, h / 2)); //todo: convert to +svg.attr("width"), +svg.attr("width")
+
+        const zoomHandler = d3.zoom()
+            .scaleExtent([-Infinity,Infinity])
+            .on("zoom", () => {
+                chartArea.attr("transform", d3.event.transform)
+            });
+
+        //ff
+        /* FP Core */
+        const compose = (...fs) => x => fs.reduceRight((a, f) => f(a), x);
+        const flog = label => x => {console.log(label, x); return x;};
+        const getProp = propertyName => x => x[propertyName];
+        const isEq = x => y => x === y;
+        const and = b1 => b2 => b1 && b2;
+        const invert = b => !b;
+        const filter = predicate => list => list.filter(predicate);
+        const reject = predicate => list => list.filter(x => !predicate(x));
+
+        const map = f => list => list.map(f);
+        const each = f => list => list.each(f);
+        const d3map = f => list => { //special. for D3 selection each
+            let results = [];
+            list.each(x => results.push(f(x)));
+            return results;
+        };
+        const id = x => x; //return identity. useful to 'skip' functions
+        const inList = list => x => list.indexOf(x) >= 0;
+        const notInList = list => x => list.indexOf(x) === -1;
+        const curry2 = f => x => y => f(x,y);
+        const curry3 = f => x => y => z => f(x,y,z);
+
+        //global state
+        let graphMaster = null;
+        let graphCurrentSelection = null;
+        let edges = null;
+        let edgeLabels = null;
+        let nodes = null;
+        let nodeLabels = null;
+        let showP = true;
+
+        function generateGraph(){
+            graphMaster = cloneGraph(data);
+
+            graphCurrentSelection = {
+                nodes: graphMaster.nodes.filter(d => true),
+                edges: graphMaster.edges.filter(d => true)
+            };
+
+            //Draw nodes and edges
+            createArrowheads();
+
+            edges = chartArea.append('g').attr('class', 'layeredges').selectAll("." + classnames.edge);
+            edgeLabels = chartArea.append('g').attr('class', 'layeredgelabels').selectAll("." + classnames.edgeLabel);
+            nodes = chartArea.append('g').attr('class', 'layernodes').selectAll("." + classnames.node);
+            nodeLabels = chartArea.append('g').attr('class', 'layernodelabels').selectAll("." + classnames.nodeLabel);
+
+            redraw(graphCurrentSelection.nodes, graphCurrentSelection.edges);
+
+
+            //setup simulation
+            simulation
+                .nodes(graphCurrentSelection.nodes)
+                .on("tick", ticked);
+
+            simulation.force("link")
+                .links(graphCurrentSelection.edges);
+
+            d3.select(window)
+            //.on("resize", handleResize)
+                .on("keydown", handleKeypress);
+
+            zoomHandler(svg);
+        }
+
+        //update position of nodes and edges every simulation tick
+        function ticked() {
+            nodes
+//                .transition() //TEST
+//                .duration(200) //TEST
+//                .ease(d3.easeLinear)
+                .attr("cx", d => d.x)
+                .attr("cy", d => d.y);
+
+            nodeLabels
+//                .transition() //TEST
+//                .duration(200) //TEST
+//                .ease(d3.easeLinear)
+                .attr("x", d => d.x)
+                .attr("y", d => d.y);
+
+            if (SHOW_EDGES) {
+                edges
+//                    .transition() //TEST
+//                    .duration(200) //TEST
+//                    .ease(d3.easeLinear)
+                    .attr('d', d => 'M ' + d.source.x + ' ' + d.source.y + ' L ' + d.target.x + ' ' + d.target.y);
+            }
+
+            //Flips EdgeLabel so it won't appear upside-down
+            if (EDGELABEL_KEEP_UPRIGHT) {
+                edgeLabels.attr('transform', function (d) {
+                    if (d.target.x < d.source.x) {
+                        const bbox = this.getBBox();
+                        const rx = bbox.x + bbox.width / 2;
+                        const ry = bbox.y + bbox.height / 2;
+                        return 'rotate(180 ' + rx + ' ' + ry + ')';
+                    }
+                    else {
+                        return 'rotate(0)';
+                    }
+                });
+            }
+        }
+
+
+        //Mouse interaction functions
+        function dragstarted(d) {
+            if (!d3.event.active) {
+                simulation.alphaTarget(0.3).restart();
+            }
+            d.fx = d.x;
+            d.fy = d.y;
+
+            if (NODEDRAG_FIXES_POSITION) {
+                d3.select(this).classed(classnames.fixed, true);
+                fixEdgesConnectedTo(d);
+            }
+        }
+
+        function dragged(d) {
+            d.fx = d3.event.x;
+            d.fy = d3.event.y;
+        }
+
+        function dragended(d) {
+            if (!d3.event.active) {
+                simulation.alphaTarget(0);
+            }
+
+            //if this node doesn't have the "fixed" classname applied, release fx (fixed-x) and fy (fixed-y)
+            if (!d3.select(this).classed(classnames.fixed)) {
+                d.fx = null;
+                d.fy = null;
+            }
+        }
+
+        function handleRightClick(d) { //right-click
+            d3.event.preventDefault(); //prevent the browser's normal right-click menu
+
+            const wasThisNodeFixed = d3.select(this).classed(classnames.fixed);
+            d3.select(this).classed(classnames.fixed, !wasThisNodeFixed);
+            fixEdgesConnectedTo(d);
+            flagReachableNodes(d);
+
+            //un/fix node position
+            d.fx = wasThisNodeFixed ? null : d.x;
+            d.fy = wasThisNodeFixed ? null : d.y;
+        }
+
+        function handleMouseOver (d) {
+            log('mouse over() d.id=' + d.id, 'at d.i=' + d.index, 'd_htmlID=' + d3.select(this).attr("id"), ' index in master=' + getNodeIndexFromMaster(d));
+            d3.select(this)
+                .attr('r', NODE_RADIUS + NODE_POP_SIZE)
+                .transition()
+                .duration(timings.nodePop)
+                .attr('r', NODE_RADIUS);
+
+            focusNeighborsOf(d);
+            unfocusNonNeighborsOf(d);
+        }
+
+        function handleMouseOut (d) {
+            svg.style("cursor","move");
+            removeFocused(d);
+            removeUnfocused(d);
+        }
+
+        function handleMouseDown(d) {
+            d3.event.stopPropagation();
+
+            removeFocused(d);
+            removeUnfocused(d);
+
+            focusNeighborsOf(d);
+            unfocusNonNeighborsOf(d);
+        }
+
+        //aa2
+        function fixEdgesConnectedTo(subjectNode) {
+            const isSubjectFixed = isNodeClassed(graphMaster)(classnames.fixed)(subjectNode);
+            const fixedSubjectNodeAndNode = propAccessor =>
+                compose(and(isSubjectFixed),
+                    isNodeClassed(graphMaster)(classnames.fixed),
+                    propAccessor);
+
+            const toggleFixedClassBy = accessNodeA => accessNodeB =>
+                toggleClassOfD3Element(classnames.fixed)(x => subjectNode === accessNodeA(x))(fixedSubjectNodeAndNode(accessNodeB));
+
+            toggleFixedClassBy(getSource)(getTarget)(edges);
+            toggleFixedClassBy(getTarget)(getSource)(edges);
+
+            toggleFixedClassBy(getSource)(getTarget)(edgeLabels);
+            toggleFixedClassBy(getTarget)(getSource)(edgeLabels);
+
+            updateEdgeArrowheads();
+        }
+
+        const d3get = p => list => { //special. for D3 selection each
+            let results = [];
+            list.each(x => results.push(x[p]));
+            return results;
+        };
+
+
+        function flagReachableNodes() {
+            nodes.classed(classnames.reachable, false);
+            const fixedNode = propAccessor => compose(isNodeClassed(graphMaster)(classnames.fixed), propAccessor);
+
+            const applyReachableClassToNode = propAccesor => compose(applyClass(classnames.reachable)(true), selectNode, propAccesor);
+            const applyReachableClassToOppositeOfFixedNode = filterAccessor => mappingAccessor => x =>
+                x.filter(fixedNode(filterAccessor)).each(applyReachableClassToNode(mappingAccessor));
+
+            //aa1 TODO: selectNodes (plural)
+//            const f = compose(
+//                //map (compose(applyClass(classnames.reachable)(true), flog('selected node'),  selectNode),
+//                flog ('id of node to select'),
+//                d3get ('id'),
+//                d3get ('target'),
+//                filter (edge => isNodeClassed(graphCurrentSelection)(classnames.fixed)(edge.source)));
+//            f(edges);
+
+            applyReachableClassToOppositeOfFixedNode(getSource)(getTarget)(edges);
+            applyReachableClassToOppositeOfFixedNode(getTarget)(getSource)(edges);
+
+            //updateEdgeArrowheads();
+        }
+
+        function focusNeighborsOf(hoveredNode) {
+            svg.style("cursor", "pointer");
+
+            const focusNodesConnectedToHoveredNode =
+                compose(applyClass (classnames.focused) (true), filter (connectedNodes(graphCurrentSelection)(hoveredNode)));
+
+            focusNodesConnectedToHoveredNode(nodes);
+            focusNodesConnectedToHoveredNode(nodeLabels);
+
+            const focusEdgesWithHoveredNode =
+                compose(applyClass (classnames.focused) (true), filter (edgeInNode(hoveredNode)));
+
+            focusEdgesWithHoveredNode(edges);
+            focusEdgesWithHoveredNode(edgeLabels);
+
+            updateEdgeArrowheads();
+        }
+
+        function unfocusNonNeighborsOf(subjectNode) {
+            const unfocusNodesNotConnectedToSubjectNode =
+                compose(
+                    applyClass (classnames.unfocused) (true),
+                    reject(connectedNodes (graphCurrentSelection) (subjectNode))
+                );
+
+            unfocusNodesNotConnectedToSubjectNode(nodes);
+            unfocusNodesNotConnectedToSubjectNode(nodeLabels);
+
+            const unfocusEdgesNotConnectedToSubjectNode =
+                compose(
+                    applyClass (classnames.unfocused) (true),
+                    reject(edgeInNode(subjectNode))
+                );
+
+            unfocusEdgesNotConnectedToSubjectNode(edges);
+            unfocusEdgesNotConnectedToSubjectNode(edgeLabels);
+
+            updateEdgeArrowheads();
+        }
+
+        function removeFocused() {
+            removeFocusedClass(nodes);
+            removeFocusedClass(nodeLabels);
+            removeFocusedClass(edges);
+            removeFocusedClass(edgeLabels);
+
+            updateEdgeArrowheads();
+        }
+
+        function removeUnfocused() {
+            removeFixedClass(nodes);
+            removeFixedClass(nodeLabels);
+            removeFixedClass(edges);
+            removeFixedClass(edgeLabels);
+
+            updateEdgeArrowheads();
+        }
+
+        function createArrowheads() {
+            if (!SHOW_EDGE_ARROWHEADS) {
+                return;
+            }
+
+            createArrowhead(ids.arrowheadNeutral);
+            createArrowhead(ids.arrowheadFocused);
+            createArrowhead(ids.arrowheadUnfocused);
+            createArrowhead(ids.arrowheadFixed);
+        }
+
+        function updateEdgeArrowheads() {
+            if (!SHOW_EDGE_ARROWHEADS) {
+                return;
+            }
+
+            //use the arrowhead that matches the edge
+            edges.each(function (){
+                const thisEdge = d3.select(this); //convenience var
+
+                //TODO: make "get list of classes of obj", convert below to switch
+                //select by priority
+                if (thisEdge.classed(classnames.focused)){
+                    thisEdge.attr('marker-end', formatMarkerUrl(ids.arrowheadFocused));
+                } else if (thisEdge.classed(classnames.fixed)) {
+                    thisEdge.attr('marker-end', formatMarkerUrl(ids.arrowheadFixed));
+                } else if (thisEdge.classed(classnames.unfocused)) {
+                    thisEdge.attr('marker-end', formatMarkerUrl(ids.arrowheadUnfocused));
+                } else {
+                    thisEdge.attr('marker-end', formatMarkerUrl(ids.arrowheadNeutral));
+                }
+            });
+        }
+
+        function createArrowheadMarker(classname, id) {
+            chartArea.append('defs')
+                .append('marker')
+                .attrs({
+                    'id': id,
+                    'class': classname,
+                    'viewBox': '-0 -5 10 10',
+                    'refX': EDGE_ARROWHEAD_OFFSET,
+                    'refY': 0,
+                    'orient': 'auto',
+                    'markerWidth' :7,
+                    'markerHeight' :7,
+                    'xoverflow': 'visible'})
+                .append('svg:path')
+                .attr('d', 'M 0,-5 L 10 ,0 L 0,5');
+        }
+
+        function cloneGraph(data){
+            return {
+                nodes: data.nodes.slice(), //clone array
+                edges: concatLabelsOfDirectedlyEqualEdges(data.edges.slice()) //clone, concat labels of same edges
+            };
+        }
+
+        function concatLabelsOfDirectedlyEqualEdges(edges){
+            return edges.reduce(function(accum, edge){
+                const matchingEdges = accum.filter(directedlyEqualEdges(edge));
+
+                if (matchingEdges.length) {
+                    matchingEdges[0].label += ', ' + edge.label;
+                    return accum;
+                }
+
+                accum.push(Object.assign({}, edge));
+                return accum;
+            }, [])
+        }
+
+        //key press handler
+        function handleKeypress() {
+            const keycode = {
+                l: 76,
+                n: 78,
+                e: 69,
+                p: 80,
+                space: 32
+            };
+
+            console.log('Key pressed: d3.event.keyCode=' + d3.event.keyCode);
+
+            if (d3.event.keyCode === keycode.space) {
+                simulation.stop();
+            }
+
+            if (d3.event.keyCode === keycode.n) {
+                log('*** selected nodes ***\n', graphCurrentSelection.nodes);
+            }
+
+            if (d3.event.keyCode === keycode.e) {
+                log('*** selected edges ***\n', graphCurrentSelection.edges);
+            }
+
+            if (d3.event.keyCode === keycode.p) { //p
+                d3.event.stopPropagation();
+
+                showP = !showP;
+
+                toggleNodes(f, showP);
+
+                function f(e){ //filter
+                    return e.id.substring(0, 1).toLowerCase() === 'p';
+                }
+            }
+        }
+
+        function toggleNodes(filterFunction, showNodes){
+            //get nodes and edges from the master
+            const nodesToToggle = graphMaster.nodes.filter(filterFunction);
+
+            const edgeFilter = showNodes ? edgeInNodes(nodesToToggle) : compose(invert, edgeInNodes(nodesToToggle));
+            const edgesToToggle = graphMaster.edges.filter(edgeFilter);
+
+            //add/remove items-to-toggle to the current selection
+            graphCurrentSelection.nodes = showNodes ?
+                graphCurrentSelection.nodes.concat(nodesToToggle) :
+                graphCurrentSelection.nodes.filter(notInList(nodesToToggle));
+
+            graphCurrentSelection.edges = showNodes ?
+                graphCurrentSelection.edges.concat(edgesToToggle) :
+                graphCurrentSelection.edges.filter(inList(edgesToToggle));
+
+            redraw(graphCurrentSelection.nodes, graphCurrentSelection.edges);
+
+            //Restart force simulation after transitions have completed
+            restartSimulation(graphCurrentSelection.nodes, graphCurrentSelection.edges, timings.nodeExit);
+
+            flagReachableNodes();
+        }
+
+        function redraw(newNodes, newEdges){
+            /* EDGES */
+            edges = edges.data(newEdges, getEdgeIndexFromMaster);
+
+            edges.exit()
+                .transition()
+                .duration(timings.nodeExit)
+                .remove();
+
+            edges = edges.enter()
+                .append('path')
+                .style("pointer-events", "none")
+                .attrs({
+                    'class': 'edge',
+                    'id': edge => 'edge' + getEdgeIndexFromMaster(edge)
+                })
+                .merge(edges);
+
+            updateEdgeArrowheads();
+
+            /* EDGE LABELS */
+            edgeLabels = edgeLabels.data(newEdges, getEdgeIndexFromMaster);
+
+            edgeLabels.exit()
+                .transition()
+                .duration(timings.nodeExit)
+                .remove();
+
+            edgeLabels = edgeLabels.enter()
+                .append("text")
+                .style("pointer-events", "none")
+                .append('textPath')
+                .style("pointer-events", "none")
+                .attrs({
+                    "class": "edgelabel",
+                    "id": edge => classnames.edgeLabel + getEdgeIndexFromMaster(edge),
+                    "xlink:href": edge => '#edge' + getEdgeIndexFromMaster(edge),
+                    "startOffset": "50%"
+                })
+                .text(edge => edge.label)
+                .merge(edgeLabels);
+
+            /* NODES */
+            nodes = nodes.data(newNodes, getNodeIndexFromMaster);
+
+            nodes.exit()
+                .transition()
+                .duration(timings.nodeExit)
+                .attr('r', 0)
+                .remove();
+
+            nodes = nodes.enter()
+                .append("circle")
+                .attrs({
+                    "class": classnames.node,
+                    "r": '1',
+                    //"id": node => classnames.node + node.id
+                    "id": node => classnames.node + getNodeIndexFromMaster(node)
+                })
+                .on('contextmenu', handleRightClick)
+                .on("mouseover", handleMouseOver)
+                .on("mouseout", handleMouseOut)
+                .on("mousedown", handleMouseDown)
+                .call(d3.drag()
+                    .on("start", dragstarted)
+                    .on("drag", dragged)
+                    .on("end", dragended)
+                )
+                .merge(nodes);
+
+            nodes.transition()
+                .duration(timings.nodeEnter)
+                .ease(d3.easeBounce)
+                .attr('r', NODE_RADIUS);
+
+            /* NODE LABELS */
+            nodeLabels = nodeLabels.data(newNodes, getNodeIndexFromMaster);
+
+            nodeLabels.exit()
+                .remove();
+
+            nodeLabels = nodeLabels.enter()
+                .append("text")
+                .attrs({
+                    "class": classnames.nodeLabel,
+                    "dy": ".35em"
+                })
+                .text(nodeLabel => nodeLabel.id)
+                .merge(nodeLabels);
+        }
+
+        function restartSimulation(newNodes, newEdges, delay) {
+            setTimeout(function() {
+                simulation.nodes(newNodes);
+                simulation.force("link").links(newEdges);
+                simulation.alpha(1).restart(); //alpha so joins don't make the screen jump
+            }, delay)
+        }
+
+        /* FP Helpers */
+        const undirectedlyEqualEdges = e1 => e2 =>
+            (e1.source === e2.source && e1.target === e2.target) ||
+            (e1.target === e2.source && e1.source === e2.target);
+
+        const directedlyEqualEdges = e1 => e2 =>
+            e1.source === e2.source &&
+            e1.target === e2.target;
+
+        const strictlyEqualEdges = e1 => e2 =>
+            e1.source === e2.source &&
+            e1.label  === e2.label &&
+            e1.target === e2.target;
+
+        const log = console.log;
+
+        const getNodeIndex = source => nodeIndex => source.nodes.indexOf(nodeIndex);
+        const getNodeIndexFromMaster = node => getNodeIndex(graphMaster)(node);
+
+        const getEdgeIndex = source => edge => source.edges.indexOf(edge);
+        const getEdgeIndexFromMaster = edge => getEdgeIndex(graphMaster)(edge);
+
+        const applyClass = className => predicate => x => x.classed(className, predicate);
+        const isNodeClassed = sourceGraph => className => node =>
+            d3.select("#node" + getNodeIndex(sourceGraph)(node)).classed(className);
+
+        const getSource = x => x.source;
+
+        const getTarget = x => x.target;
+        const toggleClassOfD3Element = className => filterPredicate => classNamePredicate => x =>
+            x.filter(filterPredicate).classed(className, classNamePredicate);
+
+        const edgeHasNodes = node1 => node2 => edge =>
+            (node1 === edge.source && edge.target === node2) ||
+            (node2 === edge.source && edge.target === node1) ||
+            node1 === node2;
+
+        const connectedNodes = graphSource => a => b =>
+            graphSource.edges.filter(edgeHasNodes(a)(b)).length;
+
+        const edgeInNode = node => edge => edge.source === node || node === edge.target;
+        const edgeInNodes = nodeList => edge => filter (nodeInEdge(edge)) (nodeList).length;
+
+        const nodeInEdge = edge => node => edgeInNode(node)(edge);
+
+        const selectNode = node => d3.select("#node" + getNodeIndexFromMaster(node));
+        const formatMarkerUrl = id => 'url(#' + id + ')';
+
+        const createArrowhead = curry2(createArrowheadMarker)(classnames.arrowhead);
+        const removeFocusedClass = applyClass(classnames.focused)(false);
+        const removeFixedClass = applyClass(classnames.unfocused)(false);
+
+
+        /* API */
+        return { //interface
+            start() {
+                generateGraph();
+                return {
+                    toggle(prefix) {
+                        log('not implemented');
+                        return this;
+                    }
+                }
+            }
+        };
+    }
+    //END OF MAIN
+
+</script>
